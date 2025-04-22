@@ -1,6 +1,6 @@
 streamlit
 prophet
-NeuralProphet
 pandas
 matplotlib
+neuralprophet
 torch>=1.12.0   # or the latest supported version
