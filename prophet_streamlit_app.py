@@ -36,9 +36,10 @@ if uploaded_file is not None:
             weekly_seasonality = st.sidebar.checkbox('Weekly Seasonality', value=True)
             daily_seasonality = st.sidebar.checkbox('Daily Seasonality', value=False)
             include_holidays = st.sidebar.checkbox('Include US Holidays + Spillover Effects', value=True)
+
             use_regressor = False
-            if selected_y in ['y', 'y1'] and 'y2' in df.columns:
-                use_regressor = st.sidebar.checkbox('Use y2 as Regressor for Forecasting y1?', value=False)
+            if 'y2' in df.columns and selected_y != 'y2':
+                use_regressor = st.sidebar.checkbox(f'Use y2 as Regressor for Forecasting {selected_y}?', value=False)
 
             holidays = None
             if include_holidays:
