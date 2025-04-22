@@ -25,9 +25,13 @@ if uploaded_file is not None:
     st.sidebar.header('Prophet Settings')
 
     try:
-        if 'ds' not in df.columns or 'y' not in df.columns:
-            st.error("CSV must have columns: 'ds' (date) and 'y' (numeric value)")
+        if 'ds' not in df.columns or not any(col in df.columns for col in ['y', 'y1', 'y2']):
+            st.error("CSV must have columns: 'ds' (date) and at least one of 'y', 'y1', or 'y2'")
         else:
+            # Select target series
+            y_options = [col for col in ['y', 'y1', 'y2'] if col in df.columns]
+            selected_y = st.sidebar.selectbox('Select Target Series', y_options)
+
             periods_input = st.sidebar.number_input('Forecast Horizon (days)', min_value=1, max_value=365*5, value=365)
             yearly_seasonality = st.sidebar.checkbox('Yearly Seasonality', value=True)
             weekly_seasonality = st.sidebar.checkbox('Weekly Seasonality', value=True)
@@ -42,55 +46,49 @@ if uploaded_file is not None:
 
                 extra_holidays = []
 
-                # Helper to create Monday after a holiday
                 def monday_after(date):
-                    if date.weekday() in [4, 5, 6]:  # Friday, Saturday, Sunday
+                    if date.weekday() in [4, 5, 6]:
                         return date + timedelta(days=(7 - date.weekday()))
                     return None
 
-                # Boxing Day
                 years = range(start_year, end_year + 5)
                 boxing_days = pd.to_datetime([f'{year}-12-26' for year in years])
                 extra_holidays.append(pd.DataFrame({'holiday': 'Boxing Day', 'ds': boxing_days}))
 
-                # Extract holidays
                 new_years = pd.to_datetime(holidays[holidays['holiday'] == "New Year's Day"]['ds'])
                 christmas = pd.to_datetime(holidays[holidays['holiday'] == 'Christmas Day']['ds'])
                 thanksgiving = pd.to_datetime(holidays[holidays['holiday'] == 'Thanksgiving']['ds'])
                 independence = pd.to_datetime(holidays[holidays['holiday'] == 'Independence Day']['ds'])
 
-                # Day after New Year's
                 day_after_new_years = new_years + timedelta(days=1)
                 extra_holidays.append(pd.DataFrame({'holiday': 'Day After New Year', 'ds': day_after_new_years}))
 
-                # Monday after New Year's
                 monday_new_years = [monday_after(d) for d in new_years if monday_after(d) is not None]
                 if monday_new_years:
                     extra_holidays.append(pd.DataFrame({'holiday': 'Monday After New Year', 'ds': monday_new_years}))
 
-                # Black Friday
                 black_friday = thanksgiving + timedelta(days=1)
                 extra_holidays.append(pd.DataFrame({'holiday': 'Black Friday', 'ds': black_friday}))
 
-                # Monday after Thanksgiving
                 monday_thanksgiving = [monday_after(d) for d in thanksgiving if monday_after(d) is not None]
                 if monday_thanksgiving:
                     extra_holidays.append(pd.DataFrame({'holiday': 'Monday After Thanksgiving', 'ds': monday_thanksgiving}))
 
-                # Monday after Christmas
                 monday_christmas = [monday_after(d) for d in christmas if monday_after(d) is not None]
                 if monday_christmas:
                     extra_holidays.append(pd.DataFrame({'holiday': 'Monday After Christmas', 'ds': monday_christmas}))
 
-                # Monday after Independence Day
                 monday_independence = [monday_after(d) for d in independence if monday_after(d) is not None]
                 if monday_independence:
                     extra_holidays.append(pd.DataFrame({'holiday': 'Monday After Independence Day', 'ds': monday_independence}))
 
-                # Combine holidays
                 if extra_holidays:
                     extra_holidays_df = pd.concat(extra_holidays)
                     holidays = pd.concat([holidays, extra_holidays_df])
+
+            # Prepare data for Prophet
+            prophet_df = df[['ds', selected_y]].rename(columns={selected_y: 'y'})
+            prophet_df['ds'] = pd.to_datetime(prophet_df['ds'])
 
             m = Prophet(
                 yearly_seasonality=yearly_seasonality,
@@ -98,24 +96,24 @@ if uploaded_file is not None:
                 daily_seasonality=daily_seasonality,
                 holidays=holidays
             )
-            m.fit(df)
+            m.fit(prophet_df)
 
             future = m.make_future_dataframe(periods=periods_input)
             forecast = m.predict(future)
 
-            st.subheader("Forecast Plot")
+            st.subheader(f"Forecast Plot ({selected_y})")
             fig1 = m.plot(forecast)
             st.pyplot(fig1)
 
-            st.subheader("Forecast Components")
+            st.subheader(f"Forecast Components ({selected_y})")
             fig2 = m.plot_components(forecast)
             st.pyplot(fig2)
 
             csv = forecast.to_csv(index=False)
             st.download_button(
-                label="Download Forecast as CSV",
+                label=f"Download Forecast for {selected_y} as CSV",
                 data=csv,
-                file_name='forecast.csv',
+                file_name=f'forecast_{selected_y}.csv',
                 mime='text/csv'
             )
 
@@ -126,4 +124,4 @@ else:
     st.info('👈 Upload a CSV file to get started!')
 
 st.markdown("---")
-st.caption("Built with Prophet, Streamlit, and Enhanced Holiday Modeling for ER Forecasting")
+st.caption("Built with Prophet, Streamlit, and Enhanced Holiday Modeling for ER Forecasting with Multi-Series Support")
