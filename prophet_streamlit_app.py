@@ -63,14 +63,12 @@ if uploaded_file:
         years = list(range(df['ds'].dt.year.min(), df['ds'].dt.year.max() + 5))
         holidays = make_holidays_df(year_list=years, country='US')
         extra = []
-        def monday_after(d):
-            return d + timedelta(days=(7-d.weekday())) if d.weekday() >=5 else None
+        def monday_after(d): return d + timedelta(days=(7-d.weekday())) if d.weekday() >=5 else None
         # Boxing Day
         bd = pd.to_datetime([f'{yr}-12-26' for yr in years])
         extra.append(pd.DataFrame({'holiday':'Boxing Day','ds':bd}))
         # keyword extract
-        def ext(kw): return pd.to_datetime(
-            holidays[holidays['holiday'].str.contains(kw, case=False)]['ds'])
+        def ext(kw): return pd.to_datetime(holidays[holidays['holiday'].str.contains(kw, case=False)]['ds'])
         ny, ch, th, ind = ext('New Year'), ext('Christmas'), ext('Thanksgiving'), ext('Independence Day')
         extra.append(pd.DataFrame({'holiday':'Day After New Year','ds':ny+timedelta(days=1)}))
         mny=[monday_after(d) for d in ny if monday_after(d)]; extra.append(pd.DataFrame({'holiday':'Mon After New Year','ds':mny}))
@@ -93,7 +91,7 @@ if uploaded_file:
         except:
             st.warning('Invalid custom changepoint format; ignoring.')
 
-    # Function to fit and forecast
+    # Fit function
     def fit_prophet(data):
         m=Prophet(
             yearly_seasonality=yearly,
@@ -120,8 +118,15 @@ if uploaded_file:
         res['residual']=res['y']-res['yhat']
         st.subheader('Backtest Performance')
         st.write(f"MAE: {res['residual'].abs().mean():.2f}, RMSE: {np.sqrt((res['residual']**2).mean()):.2f}")
+        # Residuals over time
         fig,ax=plt.subplots(); ax.plot(res.index,res['residual']); ax.set_title('Residuals Over Backtest'); st.pyplot(fig)
-        fig,ax=plt.subplots(); ax.hist(res['residual'],bins=30); ax.set_title('Backtest Residual Dist'); st.pyplot(fig)
+        # Residual distribution
+        fig,ax=plt.subplots(); ax.hist(res['residual'],bins=30); ax.set_title('Backtest Residual Distribution'); st.pyplot(fig)
+        # Rolling residual plot
+        window = min(7, backtest_days)
+        res['rolling_residual'] = res['residual'].rolling(window=window, min_periods=1).mean()
+        st.subheader(f'{window}-Day Rolling Mean Residual')
+        fig,ax=plt.subplots(); ax.plot(res.index, res['rolling_residual']); ax.set_title(f'{window}-Day Rolling Mean Residual'); st.pyplot(fig)
         st.markdown('---')
 
     # Full fit & forecast
@@ -143,4 +148,4 @@ else:
     st.info('👈 Upload a CSV file to get started!')
 
 st.markdown('---')
-st.caption('Built with Prophet, Streamlit, auto & custom changepoints, backtesting, and diagnostics')
+st.caption('Built with Prophet, Streamlit, auto & custom changepoints, backtesting, diagnostics, and rolling residuals')
