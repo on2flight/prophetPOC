@@ -40,13 +40,15 @@ if uploaded_file is not None:
             holidays = None
             if include_holidays:
                 # Built-in US holidays
-                holidays = make_holidays_df(year_list=list(range(df['ds'].min()[:4], int(df['ds'].max()[:4]) + 5)), country='US')
+                start_year = pd.to_datetime(df['ds'].min()).year
+                end_year = pd.to_datetime(df['ds'].max()).year
+                holidays = make_holidays_df(year_list=list(range(start_year, end_year + 5)), country='US')
 
                 # Custom lagged holidays
                 extra_holidays = []
 
                 # Day after New Year's
-                new_years = pd.to_datetime(holidays[holidays['holiday'] == 'New Year's Day']['ds'])
+                new_years = pd.to_datetime(holidays[holidays['holiday'] == "New Year's Day"]['ds'])
                 day_after_new_years = new_years + timedelta(days=1)
                 extra_holidays.append(pd.DataFrame({'holiday': 'Day After New Year', 'ds': day_after_new_years}))
 
