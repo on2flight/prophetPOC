@@ -6,163 +6,131 @@ from prophet import Prophet
 from prophet.make_holidays import make_holidays_df
 import matplotlib.pyplot as plt
 from datetime import timedelta
+import numpy as np
 
 st.set_page_config(page_title='Prophet Forecast Explorer', layout='wide')
 st.title('📈 Prophet Forecast Explorer')
 
+# Sidebar: data upload
 st.sidebar.header('Upload Your Time Series Data')
-
-uploaded_file = st.sidebar.file_uploader("Upload CSV", type=["csv"])
+uploaded_file = st.sidebar.file_uploader("Upload CSV", type=["csv"] )
 
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
-
-    # Ensure 'ds' column is parsed as datetime safely
+    # parse ds
     try:
         df['ds'] = pd.to_datetime(df['ds'])
     except Exception as e:
         st.error(f"Failed to parse 'ds' column as datetime: {e}")
+        st.stop()
 
     st.subheader("Raw Uploaded Data")
     st.dataframe(df.head())
-
     st.markdown("---")
 
+    # Sidebar: model settings
     st.sidebar.header('Prophet Settings')
+    # target series
+    y_cols = [col for col in ['y','y1','y2'] if col in df.columns]
+    selected_y = st.sidebar.selectbox('Select Target Series', y_cols)
+    # forecast horizon
+    periods = st.sidebar.number_input('Forecast Horizon (days)', min_value=1, max_value=365*5, value=365)
+    # seasonality toggles
+    yearly = st.sidebar.checkbox('Yearly Seasonality', value=True)
+    weekly = st.sidebar.checkbox('Weekly Seasonality', value=True)
+    daily = st.sidebar.checkbox('Daily Seasonality', value=False)
+    # holiday effects
+    include_holidays = st.sidebar.checkbox('Include US Holidays + Spillover', value=True)
+    # regressors
+    use_y2 = False
+    if 'y2' in df.columns and selected_y != 'y2':
+        use_y2 = st.sidebar.checkbox(f'Use y2 as Regressor for {selected_y}?', value=False)
+    # backtesting
+    do_backtest = st.sidebar.checkbox('Enable Backtesting', value=False)
+    backtest_days = 0
+    if do_backtest:
+        max_bt = len(df) - 2
+        backtest_days = st.sidebar.number_input('Backtest period (days)', min_value=1, max_value=max_bt, value=min(90, max_bt))
 
-    try:
-        if 'ds' not in df.columns or not any(col in df.columns for col in ['y', 'y1', 'y2']):
-            st.error("CSV must have columns: 'ds' (date) and at least one of 'y', 'y1', or 'y2'")
-        else:
-            # Choose target series
-            y_options = [col for col in ['y', 'y1', 'y2'] if col in df.columns]
-            selected_y = st.sidebar.selectbox('Select Target Series', y_options)
+    # prepare holidays
+    holidays = None
+    if include_holidays:
+        years = list(range(df['ds'].dt.year.min(), df['ds'].dt.year.max()+5))
+        holidays = make_holidays_df(year_list=years, country='US')
+        extra = []
+        def monday_after(d):
+            return d + timedelta(days=(7-d.weekday())) if d.weekday() in [4,5,6] else None
+        # boxing day
+        bd = pd.to_datetime([f'{yr}-12-26' for yr in years])
+        extra.append(pd.DataFrame({'holiday':'Boxing Day','ds':bd}))
+        # helper to extract
+        def ext(kw): return pd.to_datetime(holidays[holidays['holiday'].str.contains(kw, case=False)]['ds'])
+        ny = ext('New Year'); ch = ext('Christmas'); th = ext('Thanksgiving'); ind = ext('Independence Day')
+        # common spillovers
+        extra.append(pd.DataFrame({'holiday':'Day After New Year','ds':ny+timedelta(days=1)}))
+        mny = [monday_after(d) for d in ny if monday_after(d)];
+        if mny: extra.append(pd.DataFrame({'holiday':'Monday After New Year','ds':mny}))
+        extra.append(pd.DataFrame({'holiday':'Black Friday','ds':th+timedelta(days=1)}))
+        mth = [monday_after(d) for d in th if monday_after(d)];
+        if mth: extra.append(pd.DataFrame({'holiday':'Monday After Thanksgiving','ds':mth}))
+        mch = [monday_after(d) for d in ch if monday_after(d)];
+        if mch: extra.append(pd.DataFrame({'holiday':'Monday After Christmas','ds':mch}))
+        mind = [monday_after(d) for d in ind if monday_after(d)];
+        if mind: extra.append(pd.DataFrame({'holiday':'Monday After Independence Day','ds':mind}))
+        if extra: holidays = pd.concat([holidays]+extra)
 
-            # Forecast settings
-            periods_input = st.sidebar.number_input(
-                'Forecast Horizon (days)', min_value=1, max_value=365*5, value=365)
-            yearly_seasonality = st.sidebar.checkbox('Yearly Seasonality', value=True)
-            weekly_seasonality = st.sidebar.checkbox('Weekly Seasonality', value=True)
-            daily_seasonality = st.sidebar.checkbox('Daily Seasonality', value=False)
-            include_holidays = st.sidebar.checkbox('Include US Holidays + Spillover Effects', value=True)
+    # build prophet DataFrame
+    df_model = df[['ds', selected_y]].rename(columns={selected_y:'y'})
+    if use_y2:
+        df_model['y2'] = df['y2'].fillna(method='ffill').fillna(method='bfill')
 
-            # Enable regressor
-            use_regressor = False
-            if 'y2' in df.columns and selected_y != 'y2':
-                use_regressor = st.sidebar.checkbox(
-                    f'Use y2 as Regressor for Forecasting {selected_y}?', value=False)
+    # backtest
+    if do_backtest and backtest_days>0:
+        train = df_model.iloc[:-backtest_days]
+        test = df_model.iloc[-backtest_days:]
+        m_bt = Prophet(yearly_seasonality=yearly, weekly_seasonality=weekly,
+                       daily_seasonality=daily, holidays=holidays)
+        if use_y2: m_bt.add_regressor('y2')
+        m_bt.fit(train)
+        future_bt = m_bt.make_future_dataframe(periods=backtest_days, include_history=False)
+        if use_y2:
+            future_bt = future_bt.merge(df[['ds','y2']],on='ds',how='left')
+            future_bt['y2']=future_bt['y2'].fillna(method='ffill').fillna(method='bfill')
+        fc_bt = m_bt.predict(future_bt)
+        # merge and residuals
+        res = test.set_index('ds').join(fc_bt.set_index('ds')[['yhat']])
+        res['residual'] = res['y'] - res['yhat']
+        mae = res['residual'].abs().mean()
+        rmse = np.sqrt((res['residual']**2).mean())
+        st.subheader('Backtest Performance')
+        st.write(f"MAE: {mae:.2f}, RMSE: {rmse:.2f}")
+        fig1,ax1=plt.subplots(); ax1.plot(res.index,res['residual']); ax1.set_title('Residuals Over Backtest'); st.pyplot(fig1)
+        fig2,ax2=plt.subplots(); ax2.hist(res['residual'],bins=30); ax2.set_title('Residuals Distribution'); st.pyplot(fig2)
+        st.markdown('---')
 
-            # Prepare holidays
-            holidays = None
-            if include_holidays:
-                start_year = df['ds'].dt.year.min()
-                end_year = df['ds'].dt.year.max()
-                holidays = make_holidays_df(
-                    year_list=list(range(start_year, end_year + 5)), country='US')
+    # full model fit and forecast
+    m = Prophet(yearly_seasonality=yearly, weekly_seasonality=weekly,
+                daily_seasonality=daily, holidays=holidays)
+    if use_y2: m.add_regressor('y2')
+    m.fit(df_model)
+    future = m.make_future_dataframe(periods=periods)
+    if use_y2:
+        future = future.merge(df[['ds','y2']],on='ds',how='left')
+        future['y2']=future['y2'].fillna(method='ffill').fillna(method='bfill')
+    forecast = m.predict(future)
 
-                extra_holidays = []
-                def monday_after(date):
-                    if date.weekday() in [4, 5, 6]:  # Fri/Sat/Sun
-                        return date + timedelta(days=(7 - date.weekday()))
-                    return None
+    # display forecasts
+    st.subheader(f"Forecast Plot ({selected_y})")
+    st.pyplot(m.plot(forecast))
+    st.subheader(f"Forecast Components ({selected_y})")
+    st.pyplot(m.plot_components(forecast))
 
-                # Boxing Day
-                years = range(start_year, end_year + 5)
-                boxing_days = pd.to_datetime([f'{yr}-12-26' for yr in years])
-                extra_holidays.append(pd.DataFrame({'holiday': 'Boxing Day', 'ds': boxing_days}))
+    # download
+    st.download_button('Download Forecast',data=forecast.to_csv(index=False),
+                       file_name=f'forecast_{selected_y}.csv',mime='text/csv')
 
-                # Extract standard holidays robustly
-                def extract_dates(keyword):
-                    return pd.to_datetime(
-                        holidays[holidays['holiday'].str.contains(keyword, case=False)]['ds']
-                    )
-                new_years = extract_dates("New Year")
-                christmas = extract_dates("Christmas")
-                thanksgiving = extract_dates("Thanksgiving")
-                independence = extract_dates("Independence Day")
-
-                # Day after New Year
-                extra_holidays.append(pd.DataFrame({
-                    'holiday': 'Day After New Year', 'ds': new_years + timedelta(days=1)}))
-                # Monday after New Year
-                mons = [monday_after(d) for d in new_years if monday_after(d)]
-                if mons:
-                    extra_holidays.append(pd.DataFrame({'holiday': 'Monday After New Year', 'ds': mons}))
-                # Black Friday (day after Thanksgiving)
-                extra_holidays.append(pd.DataFrame({
-                    'holiday': 'Black Friday', 'ds': thanksgiving + timedelta(days=1)}))
-                # Monday after Thanksgiving
-                mons = [monday_after(d) for d in thanksgiving if monday_after(d)]
-                if mons:
-                    extra_holidays.append(pd.DataFrame({'holiday': 'Monday After Thanksgiving', 'ds': mons}))
-                # Monday after Christmas
-                mons = [monday_after(d) for d in christmas if monday_after(d)]
-                if mons:
-                    extra_holidays.append(pd.DataFrame({'holiday': 'Monday After Christmas', 'ds': mons}))
-                # Monday after Independence Day
-                mons = [monday_after(d) for d in independence if monday_after(d)]
-                if mons:
-                    extra_holidays.append(pd.DataFrame({'holiday': 'Monday After Independence Day', 'ds': mons}))
-
-                # Combine holidays
-                if extra_holidays:
-                    holidays = pd.concat([holidays] + extra_holidays)
-
-            # Build DataFrame for Prophet
-            prophet_df = df[['ds', selected_y]].rename(columns={selected_y: 'y'})
-            if use_regressor:
-                prophet_df['y2'] = df['y2'].fillna(method='ffill').fillna(method='bfill')
-
-            # Initialize model
-            m = Prophet(
-                yearly_seasonality=yearly_seasonality,
-                weekly_seasonality=weekly_seasonality,
-                daily_seasonality=daily_seasonality,
-                holidays=holidays)
-            if use_regressor:
-                m.add_regressor('y2')
-
-            # Fit
-            m.fit(prophet_df)
-
-            # Forecast
-            future = m.make_future_dataframe(periods=periods_input)
-            if use_regressor:
-                future = future.merge(
-                    df[['ds', 'y2']], on='ds', how='left')
-                future['y2'] = future['y2'].fillna(method='ffill').fillna(method='bfill')
-
-            forecast = m.predict(future)
-
-            # Plot results
-            st.subheader(f"Forecast Plot ({selected_y})")
-            st.pyplot(m.plot(forecast))
-            st.subheader(f"Forecast Components ({selected_y})")
-            st.pyplot(m.plot_components(forecast))
-
-            if use_regressor:
-                st.subheader("Regressor Influence")
-                beta_samples = m.params['beta'][0]
-                coef = beta_samples.mean()
-                std = beta_samples.std()
-                st.write(f"Coefficient for y2: {coef:.4f} ± {std:.4f}")
-                fig, ax = plt.subplots()
-                ax.bar(['y2'], [coef], yerr=[std], capsize=5)
-                ax.axhline(0, color='black', linewidth=0.8)
-                ax.set_ylabel('Coefficient')
-                ax.set_title('External Regressor Effect')
-                st.pyplot(fig)
-
-            # Download
-            st.download_button(
-                label=f"Download Forecast for {selected_y}",
-                data=forecast.to_csv(index=False),
-                file_name=f'forecast_{selected_y}.csv',
-                mime='text/csv')
-    except Exception as e:
-        st.error(f"Error: {e}")
 else:
     st.info('👈 Upload a CSV file to get started!')
 
-st.markdown("---")
-st.caption("Built with Prophet, Streamlit, and Enhanced Holiday Modeling for ER Forecasting")
+st.markdown('---')
+st.caption('Built with Prophet, Streamlit, plus backtesting and residual diagnostics')
