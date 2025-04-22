@@ -11,165 +11,136 @@ import numpy as np
 st.set_page_config(page_title='Prophet Forecast Explorer', layout='wide')
 st.title('📈 Prophet Forecast Explorer')
 
-# Sidebar: data upload
+# Sidebar: Data Upload
 st.sidebar.header('Upload Your Time Series Data')
 uploaded_file = st.sidebar.file_uploader("Upload CSV", type=["csv"])
 
-if uploaded_file is not None:
+if uploaded_file:
     df = pd.read_csv(uploaded_file)
-    # parse ds
+    # Parse dates
     try:
         df['ds'] = pd.to_datetime(df['ds'])
     except Exception as e:
-        st.error(f"Failed to parse 'ds' column as datetime: {e}")
+        st.error(f"Failed to parse 'ds' as datetime: {e}")
         st.stop()
 
     st.subheader("Raw Uploaded Data")
     st.dataframe(df.head())
-    st.markdown("---")
+    st.markdown('---')
 
-    # Sidebar: model settings
+    # Sidebar: Prophet Settings
     st.sidebar.header('Prophet Settings')
-    # target series
-    y_cols = [col for col in ['y', 'y1', 'y2'] if col in df.columns]
+    # Target series
+    y_cols = [c for c in ['y','y1','y2'] if c in df.columns]
     selected_y = st.sidebar.selectbox('Select Target Series', y_cols)
-    # forecast horizon
+    # Forecast horizon
     periods = st.sidebar.number_input('Forecast Horizon (days)', min_value=1, max_value=365*5, value=365)
-    # seasonality toggles
-    yearly = st.sidebar.checkbox('Yearly Seasonality', value=True)
-    weekly = st.sidebar.checkbox('Weekly Seasonality', value=True)
-    daily = st.sidebar.checkbox('Daily Seasonality', value=False)
-    # changepoint settings
+    # Seasonality toggles
+    yearly = st.sidebar.checkbox('Yearly Seasonality', True)
+    weekly = st.sidebar.checkbox('Weekly Seasonality', True)
+    daily = st.sidebar.checkbox('Daily Seasonality', False)
+    # Changepoint controls
     st.sidebar.header('Changepoint Settings')
-    cp_scale = st.sidebar.number_input('Changepoint Prior Scale', min_value=0.001, max_value=1.0,
-                                       value=0.05, step=0.01)
+    cp_scale = st.sidebar.number_input('Changepoint Prior Scale', 0.001, 1.0, 0.05, 0.01)
+    n_changepoints = st.sidebar.number_input('Number of Automatic Changepoints', 0, 100, 25, 1)
     custom_cps = st.sidebar.text_input('Custom Changepoints (YYYY-MM-DD, comma-separated)', '')
-    # holiday effects
-    include_holidays = st.sidebar.checkbox('Include US Holidays + Spillover', value=True)
-    # regressors
+    # Holiday effects
+    include_holidays = st.sidebar.checkbox('Include US Holidays + Spillover', True)
+    # Regressor
     use_y2 = False
     if 'y2' in df.columns and selected_y != 'y2':
-        use_y2 = st.sidebar.checkbox(f'Use y2 as Regressor for {selected_y}?', value=False)
-    # backtesting settings
-    do_backtest = st.sidebar.checkbox('Enable Backtesting', value=False)
+        use_y2 = st.sidebar.checkbox(f'Use y2 as regressor for {selected_y}?', False)
+    # Backtest settings
+    do_backtest = st.sidebar.checkbox('Enable Backtesting', False)
     backtest_days = 0
     if do_backtest:
         max_bt = len(df) - 1
-        backtest_days = st.sidebar.number_input('Backtest Period (days)', min_value=1,
-                                                max_value=max_bt, value=min(90, max_bt))
+        backtest_days = st.sidebar.number_input('Backtest Period (days)', 1, max_bt, min(90, max_bt))
 
-    # Prepare holiday dataframe
+    # Build holidays dataframe
     holidays = None
     if include_holidays:
         years = list(range(df['ds'].dt.year.min(), df['ds'].dt.year.max() + 5))
         holidays = make_holidays_df(year_list=years, country='US')
         extra = []
         def monday_after(d):
-            return d + timedelta(days=(7 - d.weekday())) if d.weekday() in [4,5,6] else None
+            return d + timedelta(days=(7-d.weekday())) if d.weekday() >=5 else None
         # Boxing Day
         bd = pd.to_datetime([f'{yr}-12-26' for yr in years])
         extra.append(pd.DataFrame({'holiday':'Boxing Day','ds':bd}))
-        # extract by keyword
-        def ext(kw):
-            return pd.to_datetime(
-                holidays[holidays['holiday'].str.contains(kw, case=False)]['ds']
-            )
-        ny = ext('New Year'); ch = ext('Christmas'); th = ext('Thanksgiving'); ind = ext('Independence Day')
-        # add spillovers
-        extra.append(pd.DataFrame({'holiday':'Day After New Year','ds':ny + timedelta(days=1)}))
-        mny = [monday_after(d) for d in ny if monday_after(d)];
-        if mny: extra.append(pd.DataFrame({'holiday':'Monday After New Year','ds':mny}))
-        extra.append(pd.DataFrame({'holiday':'Black Friday','ds':th + timedelta(days=1)}))
-        mth = [monday_after(d) for d in th if monday_after(d)];
-        if mth: extra.append(pd.DataFrame({'holiday':'Monday After Thanksgiving','ds':mth}))
-        mch = [monday_after(d) for d in ch if monday_after(d)];
-        if mch: extra.append(pd.DataFrame({'holiday':'Monday After Christmas','ds':mch}))
-        mind = [monday_after(d) for d in ind if monday_after(d)];
-        if mind: extra.append(pd.DataFrame({'holiday':'Monday After Independence Day','ds':mind}))
-        if extra:
-            holidays = pd.concat([holidays] + extra, ignore_index=True)
+        # keyword extract
+        def ext(kw): return pd.to_datetime(
+            holidays[holidays['holiday'].str.contains(kw, case=False)]['ds'])
+        ny, ch, th, ind = ext('New Year'), ext('Christmas'), ext('Thanksgiving'), ext('Independence Day')
+        extra.append(pd.DataFrame({'holiday':'Day After New Year','ds':ny+timedelta(days=1)}))
+        mny=[monday_after(d) for d in ny if monday_after(d)]; extra.append(pd.DataFrame({'holiday':'Mon After New Year','ds':mny}))
+        extra.append(pd.DataFrame({'holiday':'Black Friday','ds':th+timedelta(days=1)}))
+        mth=[monday_after(d) for d in th if monday_after(d)]; extra.append(pd.DataFrame({'holiday':'Mon After Thanksgiving','ds':mth}))
+        mch=[monday_after(d) for d in ch if monday_after(d)]; extra.append(pd.DataFrame({'holiday':'Mon After Christmas','ds':mch}))
+        mind=[monday_after(d) for d in ind if monday_after(d)]; extra.append(pd.DataFrame({'holiday':'Mon After Independence Day','ds':mind}))
+        holidays = pd.concat([holidays]+extra, ignore_index=True)
 
-    # Build modeling dataframe
-    df_model = df[['ds', selected_y]].rename(columns={selected_y:'y'})
+    # Prepare modeling df
+    df_model = df[['ds',selected_y]].rename(columns={selected_y:'y'})
     if use_y2:
-        df_model['y2'] = df['y2'].fillna(method='ffill').fillna(method='bfill')
+        df_model['y2']=df['y2'].fillna(method='ffill').fillna(method='bfill')
 
-    # Helper: parse custom changepoints
+    # Parse custom changepoints
     changepoints = None
     if custom_cps:
         try:
-            cps = [pd.to_datetime(dt.strip()) for dt in custom_cps.split(',')]
-            changepoints = cps
-        except Exception:
-            st.warning('Invalid custom changepoint format; ignoring custom list.')
+            changepoints = [pd.to_datetime(dt.strip()) for dt in custom_cps.split(',')]
+        except:
+            st.warning('Invalid custom changepoint format; ignoring.')
+
+    # Function to fit and forecast
+    def fit_prophet(data):
+        m=Prophet(
+            yearly_seasonality=yearly,
+            weekly_seasonality=weekly,
+            daily_seasonality=daily,
+            changepoint_prior_scale=cp_scale,
+            n_changepoints=n_changepoints if not changepoints else None,
+            changepoints=changepoints,
+            holidays=holidays)
+        if use_y2: m.add_regressor('y2')
+        m.fit(data)
+        return m
 
     # Backtesting
-    if do_backtest and backtest_days > 0:
-        train = df_model.iloc[:-backtest_days]
-        test = df_model.iloc[-backtest_days:]
-        m_bt = Prophet(yearly_seasonality=yearly, weekly_seasonality=weekly,
-                       daily_seasonality=daily, changepoint_prior_scale=cp_scale,
-                       holidays=holidays, changepoints=changepoints)
-        if use_y2: m_bt.add_regressor('y2')
-        m_bt.fit(train)
-        future_bt = m_bt.make_future_dataframe(periods=backtest_days, include_history=False)
+    if do_backtest and backtest_days>0:
+        train=df_model.iloc[:-backtest_days]; test=df_model.iloc[-backtest_days:]
+        m_bt=fit_prophet(train)
+        future_bt=m_bt.make_future_dataframe(periods=backtest_days, include_history=False)
         if use_y2:
-            future_bt = future_bt.merge(df[['ds','y2']], on='ds', how='left')
-            future_bt['y2'] = future_bt['y2'].fillna(method='ffill').fillna(method='bfill')
-        fc_bt = m_bt.predict(future_bt)
-        res = test.set_index('ds').join(fc_bt.set_index('ds')[['yhat']])
-        res['residual'] = res['y'] - res['yhat']
-        mae = res['residual'].abs().mean()
-        rmse = np.sqrt((res['residual']**2).mean())
+            future_bt=future_bt.merge(df[['ds','y2']],on='ds',how='left')
+            future_bt['y2']=future_bt['y2'].fillna(method='ffill').fillna(method='bfill')
+        fc_bt=m_bt.predict(future_bt)
+        res=test.set_index('ds').join(fc_bt.set_index('ds')[['yhat']])
+        res['residual']=res['y']-res['yhat']
         st.subheader('Backtest Performance')
-        st.write(f"MAE: {mae:.2f}, RMSE: {rmse:.2f}")
-        fig1, ax1 = plt.subplots()
-        ax1.plot(res.index, res['residual'])
-        ax1.set_title('Residuals Over Backtest')
-        st.pyplot(fig1)
-        fig2, ax2 = plt.subplots()
-        ax2.hist(res['residual'], bins=30)
-        ax2.set_title('Residuals Distribution')
-        st.pyplot(fig2)
-        # Detailed error analysis
-        res_analysis = res.copy()
-        res_analysis['day_of_week'] = res_analysis.index.day_name()
-        if include_holidays and holidays is not None:
-            hol_map = holidays.set_index('ds')['holiday'].to_dict()
-            res_analysis['holiday'] = res_analysis.index.map(lambda d: hol_map.get(d, ''))
-        high_errors = res_analysis.reindex(
-            res_analysis['residual'].abs().sort_values(ascending=False).index)
-        st.subheader('Top High-Error Dates')
-        st.table(high_errors[['y','yhat','residual','day_of_week','holiday']].head(10))
-        err_by_dow = res_analysis.groupby('day_of_week')['residual'].apply(
-            lambda x: x.abs().mean()).sort_values(ascending=False)
-        st.subheader('Mean Absolute Error by Day of Week')
-        st.bar_chart(err_by_dow)
+        st.write(f"MAE: {res['residual'].abs().mean():.2f}, RMSE: {np.sqrt((res['residual']**2).mean()):.2f}")
+        fig,ax=plt.subplots(); ax.plot(res.index,res['residual']); ax.set_title('Residuals Over Backtest'); st.pyplot(fig)
+        fig,ax=plt.subplots(); ax.hist(res['residual'],bins=30); ax.set_title('Backtest Residual Dist'); st.pyplot(fig)
         st.markdown('---')
 
-    # Full model fit and forecast
-    m = Prophet(yearly_seasonality=yearly, weekly_seasonality=weekly,
-                daily_seasonality=daily, changepoint_prior_scale=cp_scale,
-                holidays=holidays, changepoints=changepoints)
-    if use_y2: m.add_regressor('y2')
-    m.fit(df_model)
-    future = m.make_future_dataframe(periods=periods)
+    # Full fit & forecast
+    m=fit_prophet(df_model)
+    future=m.make_future_dataframe(periods=periods)
     if use_y2:
-        future = future.merge(df[['ds','y2']], on='ds', how='left')
-        future['y2'] = future['y2'].fillna(method='ffill').fillna(method='bfill')
-    forecast = m.predict(future)
+        future=future.merge(df[['ds','y2']],on='ds',how='left')
+        future['y2']=future['y2'].fillna(method='ffill').fillna(method='bfill')
+    forecast=m.predict(future)
 
-    # Display forecasts
     st.subheader(f"Forecast Plot ({selected_y})")
     st.pyplot(m.plot(forecast))
     st.subheader(f"Forecast Components ({selected_y})")
     st.pyplot(m.plot_components(forecast))
 
-    # Download
-    st.download_button('Download Forecast', data=forecast.to_csv(index=False),
-                       file_name=f'forecast_{selected_y}.csv', mime='text/csv')
+    st.download_button('Download Forecast',data=forecast.to_csv(index=False),
+                       file_name=f'forecast_{selected_y}.csv',mime='text/csv')
 else:
     st.info('👈 Upload a CSV file to get started!')
 
 st.markdown('---')
-st.caption('Built with Prophet, Streamlit, plus changepoint controls, backtesting, and diagnostics')
+st.caption('Built with Prophet, Streamlit, auto & custom changepoints, backtesting, and diagnostics')
