@@ -45,45 +45,6 @@ if uploaded_file is not None:
     use_y2 = False
     if 'y2' in df.columns and selected_y != 'y2':
         use_y2 = st.sidebar.checkbox(f'Use y2 as Regressor for {selected_y}?', value=False)
-    # backtesting
-    do_backtest = st.sidebar.checkbox('Enable Backtesting', value=False)
-    backtest_days = 0
-    if do_backtest:
-        max_bt = len(df) - 2
-        backtest_days = st.sidebar.number_input('Backtest period (days)', min_value=1, max_value=max_bt, value=min(90, max_bt))
-
-    # prepare holidays
-    holidays = None
-    if include_holidays:
-        years = list(range(df['ds'].dt.year.min(), df['ds'].dt.year.max()+5))
-        holidays = make_holidays_df(year_list=years, country='US')
-        extra = []
-        def monday_after(d):
-            return d + timedelta(days=(7-d.weekday())) if d.weekday() in [4,5,6] else None
-        # boxing day
-        bd = pd.to_datetime([f'{yr}-12-26' for yr in years])
-        extra.append(pd.DataFrame({'holiday':'Boxing Day','ds':bd}))
-        # helper to extract
-        def ext(kw): return pd.to_datetime(holidays[holidays['holiday'].str.contains(kw, case=False)]['ds'])
-        ny = ext('New Year'); ch = ext('Christmas'); th = ext('Thanksgiving'); ind = ext('Independence Day')
-        # common spillovers
-        extra.append(pd.DataFrame({'holiday':'Day After New Year','ds':ny+timedelta(days=1)}))
-        mny = [monday_after(d) for d in ny if monday_after(d)];
-        if mny: extra.append(pd.DataFrame({'holiday':'Monday After New Year','ds':mny}))
-        extra.append(pd.DataFrame({'holiday':'Black Friday','ds':th+timedelta(days=1)}))
-        mth = [monday_after(d) for d in th if monday_after(d)];
-        if mth: extra.append(pd.DataFrame({'holiday':'Monday After Thanksgiving','ds':mth}))
-        mch = [monday_after(d) for d in ch if monday_after(d)];
-        if mch: extra.append(pd.DataFrame({'holiday':'Monday After Christmas','ds':mch}))
-        mind = [monday_after(d) for d in ind if monday_after(d)];
-        if mind: extra.append(pd.DataFrame({'holiday':'Monday After Independence Day','ds':mind}))
-        if extra: holidays = pd.concat([holidays]+extra)
-
-    # build prophet DataFrame
-    df_model = df[['ds', selected_y]].rename(columns={selected_y:'y'})
-    if use_y2:
-        df_model['y2'] = df['y2'].fillna(method='ffill').fillna(method='bfill')
-
     # backtest
     if do_backtest and backtest_days>0:
         train = df_model.iloc[:-backtest_days]
@@ -106,6 +67,28 @@ if uploaded_file is not None:
         st.write(f"MAE: {mae:.2f}, RMSE: {rmse:.2f}")
         fig1,ax1=plt.subplots(); ax1.plot(res.index,res['residual']); ax1.set_title('Residuals Over Backtest'); st.pyplot(fig1)
         fig2,ax2=plt.subplots(); ax2.hist(res['residual'],bins=30); ax2.set_title('Residuals Distribution'); st.pyplot(fig2)
+
+        # Analyze high-error dates
+        res_analysis = res.copy()
+        # add features
+        res_analysis['day_of_week'] = res_analysis.index.day_name()
+        # mark holidays
+        if include_holidays and holidays is not None:
+            # merge holiday names
+            hol_df = holidays[['holiday','ds']]
+            hol_df['ds'] = pd.to_datetime(hol_df['ds'])
+            hol_map = hol_df.set_index('ds')['holiday']
+            res_analysis['holiday'] = res_analysis.index.map(lambda d: hol_map.get(d, ''))
+        # top absolute residuals
+        high_errors = res_analysis.reindex(res_analysis['residual'].abs().sort_values(ascending=False).index)
+        st.subheader('Top High-Error Dates')
+        st.table(high_errors[['y','yhat','residual','day_of_week','holiday']].head(10))
+
+        # error by weekday
+        err_by_dow = res_analysis.groupby('day_of_week')['residual'].apply(lambda x: x.abs().mean()).sort_values(ascending=False)
+        st.subheader('Mean Absolute Error by Day of Week')
+        st.bar_chart(err_by_dow)
+
         st.markdown('---')
 
     # full model fit and forecast
