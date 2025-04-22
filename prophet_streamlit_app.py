@@ -17,6 +17,12 @@ uploaded_file = st.sidebar.file_uploader("Upload CSV", type=["csv"])
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
 
+    # Ensure 'ds' column is parsed as datetime safely
+    try:
+        df['ds'] = pd.to_datetime(df['ds'])
+    except Exception as e:
+        st.error(f"Failed to parse 'ds' column as datetime: {e}")
+
     st.subheader("Raw Uploaded Data")
     st.dataframe(df.head())
 
@@ -90,7 +96,6 @@ if uploaded_file is not None:
                     holidays = pd.concat([holidays, extra_holidays_df])
 
             prophet_df = df[['ds', selected_y]].rename(columns={selected_y: 'y'})
-            prophet_df['ds'] = pd.to_datetime(prophet_df['ds'])
 
             if use_regressor:
                 prophet_df['y2'] = df['y2']
