@@ -94,6 +94,8 @@ if uploaded_file is not None:
 
             if use_regressor:
                 prophet_df['y2'] = df['y2']
+                prophet_df['y2'].fillna(method='ffill', inplace=True)
+                prophet_df['y2'].fillna(method='bfill', inplace=True)
 
             m = Prophet(
                 yearly_seasonality=yearly_seasonality,
@@ -112,6 +114,7 @@ if uploaded_file is not None:
             if use_regressor:
                 future = future.merge(df[['ds', 'y2']], on='ds', how='left')
                 future['y2'].fillna(method='ffill', inplace=True)
+                future['y2'].fillna(method='bfill', inplace=True)
 
             forecast = m.predict(future)
 
