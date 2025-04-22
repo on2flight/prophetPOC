@@ -28,7 +28,6 @@ if uploaded_file is not None:
         if 'ds' not in df.columns or not any(col in df.columns for col in ['y', 'y1', 'y2']):
             st.error("CSV must have columns: 'ds' (date) and at least one of 'y', 'y1', or 'y2'")
         else:
-            # Select target series
             y_options = [col for col in ['y', 'y1', 'y2'] if col in df.columns]
             selected_y = st.sidebar.selectbox('Select Target Series', y_options)
 
@@ -37,6 +36,9 @@ if uploaded_file is not None:
             weekly_seasonality = st.sidebar.checkbox('Weekly Seasonality', value=True)
             daily_seasonality = st.sidebar.checkbox('Daily Seasonality', value=False)
             include_holidays = st.sidebar.checkbox('Include US Holidays + Spillover Effects', value=True)
+            use_regressor = False
+            if selected_y in ['y', 'y1'] and 'y2' in df.columns:
+                use_regressor = st.sidebar.checkbox('Use y2 as Regressor for Forecasting y1?', value=False)
 
             holidays = None
             if include_holidays:
@@ -86,9 +88,11 @@ if uploaded_file is not None:
                     extra_holidays_df = pd.concat(extra_holidays)
                     holidays = pd.concat([holidays, extra_holidays_df])
 
-            # Prepare data for Prophet
             prophet_df = df[['ds', selected_y]].rename(columns={selected_y: 'y'})
             prophet_df['ds'] = pd.to_datetime(prophet_df['ds'])
+
+            if use_regressor:
+                prophet_df['y2'] = df['y2']
 
             m = Prophet(
                 yearly_seasonality=yearly_seasonality,
@@ -96,9 +100,18 @@ if uploaded_file is not None:
                 daily_seasonality=daily_seasonality,
                 holidays=holidays
             )
+
+            if use_regressor:
+                m.add_regressor('y2')
+
             m.fit(prophet_df)
 
             future = m.make_future_dataframe(periods=periods_input)
+
+            if use_regressor:
+                future = future.merge(df[['ds', 'y2']], on='ds', how='left')
+                future['y2'].fillna(method='ffill', inplace=True)
+
             forecast = m.predict(future)
 
             st.subheader(f"Forecast Plot ({selected_y})")
@@ -108,6 +121,19 @@ if uploaded_file is not None:
             st.subheader(f"Forecast Components ({selected_y})")
             fig2 = m.plot_components(forecast)
             st.pyplot(fig2)
+
+            if use_regressor:
+                st.subheader("Regressor Coefficient with Confidence Interval")
+                regressor_coefs = m.params['beta'][0]
+                regressor_std = m.params['beta'][1]
+                regressor_name = 'y2'
+                st.write(f"Coefficient for {regressor_name}: {regressor_coefs:.4f} ± {regressor_std:.4f}")
+                fig3, ax3 = plt.subplots()
+                ax3.bar([regressor_name], [regressor_coefs], yerr=[regressor_std], capsize=5)
+                ax3.axhline(0, color='black', linewidth=0.8)
+                ax3.set_ylabel('Coefficient Value')
+                ax3.set_title('External Regressor Influence with Error Bars')
+                st.pyplot(fig3)
 
             csv = forecast.to_csv(index=False)
             st.download_button(
@@ -124,4 +150,4 @@ else:
     st.info('👈 Upload a CSV file to get started!')
 
 st.markdown("---")
-st.caption("Built with Prophet, Streamlit, and Enhanced Holiday Modeling for ER Forecasting with Multi-Series Support")
+st.caption("Built with Prophet, Streamlit, and Enhanced Holiday Modeling for ER Forecasting with Multi-Series and Regressor Support")
