@@ -3,3 +3,4 @@ prophet
 NeuralProphet
 pandas
 matplotlib
+torch>=1.12.0   # or the latest supported version
