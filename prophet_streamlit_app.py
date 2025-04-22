@@ -71,31 +71,38 @@ if uploaded_file is not None:
                 boxing_days = pd.to_datetime([f'{yr}-12-26' for yr in years])
                 extra_holidays.append(pd.DataFrame({'holiday': 'Boxing Day', 'ds': boxing_days}))
 
-                # Extract standard holidays
-                std = holidays.set_index('holiday')['ds']
-                new_years = pd.to_datetime(std['New Year\'s Day'])
-                christmas = pd.to_datetime(std['Christmas Day'])
-                thanksgiving = pd.to_datetime(std['Thanksgiving'])
-                independence = pd.to_datetime(std['Independence Day'])
+                # Extract standard holidays robustly
+                def extract_dates(keyword):
+                    return pd.to_datetime(
+                        holidays[holidays['holiday'].str.contains(keyword, case=False)]['ds']
+                    )
+                new_years = extract_dates("New Year")
+                christmas = extract_dates("Christmas")
+                thanksgiving = extract_dates("Thanksgiving")
+                independence = extract_dates("Independence Day")
 
                 # Day after New Year
                 extra_holidays.append(pd.DataFrame({
                     'holiday': 'Day After New Year', 'ds': new_years + timedelta(days=1)}))
                 # Monday after New Year
                 mons = [monday_after(d) for d in new_years if monday_after(d)]
-                if mons: extra_holidays.append(pd.DataFrame({'holiday':'Monday After New Year','ds':mons}))
-                # Black Friday
+                if mons:
+                    extra_holidays.append(pd.DataFrame({'holiday': 'Monday After New Year', 'ds': mons}))
+                # Black Friday (day after Thanksgiving)
                 extra_holidays.append(pd.DataFrame({
-                    'holiday':'Black Friday','ds':thanksgiving + timedelta(days=1)}))
+                    'holiday': 'Black Friday', 'ds': thanksgiving + timedelta(days=1)}))
                 # Monday after Thanksgiving
                 mons = [monday_after(d) for d in thanksgiving if monday_after(d)]
-                if mons: extra_holidays.append(pd.DataFrame({'holiday':'Monday After Thanksgiving','ds':mons}))
+                if mons:
+                    extra_holidays.append(pd.DataFrame({'holiday': 'Monday After Thanksgiving', 'ds': mons}))
                 # Monday after Christmas
                 mons = [monday_after(d) for d in christmas if monday_after(d)]
-                if mons: extra_holidays.append(pd.DataFrame({'holiday':'Monday After Christmas','ds':mons}))
-                # Monday after Independence
+                if mons:
+                    extra_holidays.append(pd.DataFrame({'holiday': 'Monday After Christmas', 'ds': mons}))
+                # Monday after Independence Day
                 mons = [monday_after(d) for d in independence if monday_after(d)]
-                if mons: extra_holidays.append(pd.DataFrame({'holiday':'Monday After Independence Day','ds':mons}))
+                if mons:
+                    extra_holidays.append(pd.DataFrame({'holiday': 'Monday After Independence Day', 'ds': mons}))
 
                 # Combine holidays
                 if extra_holidays:
@@ -122,7 +129,7 @@ if uploaded_file is not None:
             future = m.make_future_dataframe(periods=periods_input)
             if use_regressor:
                 future = future.merge(
-                    df[['ds','y2']], on='ds', how='left')
+                    df[['ds', 'y2']], on='ds', how='left')
                 future['y2'] = future['y2'].fillna(method='ffill').fillna(method='bfill')
 
             forecast = m.predict(future)
